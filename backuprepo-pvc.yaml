@@ -1,0 +1,11 @@
+apiVersion: dataprotection.kubeblocks.io/v1alpha1
+kind: BackupRepo
+metadata:
+  name: my-backup-repo
+spec:
+  storageProviderRef: pvc
+  volumeCapacity: 10Gi
+  pvReclaimPolicy: Retain
+  default: true
+  config:
+    storageClassName: gp3

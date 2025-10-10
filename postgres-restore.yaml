@@ -1,0 +1,13 @@
+apiVersion: dataprotection.kubeblocks.io/v1alpha1
+kind: Restore
+metadata:
+  name: pg-test-restore-001
+  namespace: demo
+spec:
+  backup:
+    name: pg-test-backup-001
+    namespace: demo
+  prepareDataConfig:
+    restore ToClusterRef:
+      name: pg-test
+  serviceAccountName: kb-pg-test

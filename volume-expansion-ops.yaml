@@ -1,0 +1,13 @@
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: OpsRequest
+metadata:
+  name: pg-test-volume-expand
+  namespace: demo
+spec:
+  clusterName: pg-test
+  type: VolumeExpansion
+  volumeExpansion:
+    - componentName: postgresql
+      volumeClaimTemplates:
+        - name: data
+          storage: 5Gi
