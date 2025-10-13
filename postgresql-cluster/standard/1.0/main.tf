@@ -64,6 +64,12 @@ resource "kubernetes_namespace" "postgresql_cluster" {
 resource "kubernetes_manifest" "backup_repo" {
   count = local.create_backup_repo ? 1 : 0
 
+  # Bypass CRD discovery during plan phase
+  object = {
+    apiVersion = "dataprotection.kubeblocks.io/v1alpha1"
+    kind       = "BackupRepo"
+  }
+
   manifest = {
     apiVersion = "dataprotection.kubeblocks.io/v1alpha1"
     kind       = "BackupRepo"
@@ -109,6 +115,12 @@ resource "kubernetes_manifest" "backup_repo" {
 # PostgreSQL Cluster CRD
 # REQUIRES: KubeBlocks operator must be deployed first (CRDs must exist)
 resource "kubernetes_manifest" "postgresql_cluster" {
+  # Bypass CRD discovery during plan phase
+  object = {
+    apiVersion = "apps.kubeblocks.io/v1alpha1"
+    kind       = "Cluster"
+  }
+
   manifest = {
     apiVersion = "apps.kubeblocks.io/v1alpha1"
     kind       = "Cluster"
