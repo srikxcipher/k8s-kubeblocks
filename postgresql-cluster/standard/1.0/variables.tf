@@ -66,9 +66,11 @@ variable "inputs" {
         chart_version = optional(string)
       }))
       output_interfaces = optional(object({
-        release_id    = optional(string)
-        dependency_id = optional(string)
-        ready         = optional(string)
+        output = optional(object({
+          release_id    = optional(string)
+          dependency_id = optional(string)
+          ready         = optional(string)
+        }))
       }))
     })
     kubernetes_cluster = object({

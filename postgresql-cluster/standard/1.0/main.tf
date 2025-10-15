@@ -6,8 +6,8 @@
 # This null_resource forces Terraform to wait for the operator's Helm release
 resource "null_resource" "wait_for_operator" {
   triggers = {
-    operator_release_id = var.inputs.kubeblocks_operator.output_interfaces.release_id
-    operator_status     = var.inputs.kubeblocks_operator.output_interfaces.ready
+    operator_release_id = var.inputs.kubeblocks_operator.output_interfaces.output.release_id
+    operator_status     = var.inputs.kubeblocks_operator.output_interfaces.output.ready
   }
 }
 
