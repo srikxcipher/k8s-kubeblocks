@@ -6,13 +6,19 @@ clouds:
 description: Creates and manages PostgreSQL database clusters using KubeBlocks operator
   v0.9.5
 inputs:
-  kubeblocks_platform:
-    type: '@outputs/kubeblocks-platform'
+  kubeblocks_operator:
+    type: '@outputs/kubeblocks-operator'
     optional: false
-    displayName: KubeBlocks Platform
-    description: KubeBlocks operator installation (provides kubernetes provider)
+    displayName: KubeBlocks Operator
+    description: KubeBlocks operator installation (CRDs must be ready)
+  kubernetes_cluster:
+    type: '@outputs/kubernetes'
+    optional: false
+    displayName: Kubernetes Cluster
+    description: Target Kubernetes cluster
     providers:
     - kubernetes
+    - helm
 spec:
   title: PostgreSQL Cluster Configuration
   description: PostgreSQL database cluster managed by KubeBlocks
@@ -236,14 +242,6 @@ outputs:
   default:
     type: '@outputs/postgresql-cluster'
     title: PostgreSQL Cluster Credentials
-    providers:
-      kubernetes:
-        source: hashicorp/kubernetes
-        version: ~> 2.5
-        attributes:
-          host: kubeblocks_platform.interfaces.kubernetes_host
-          cluster_ca_certificate: kubeblocks_platform.interfaces.kubernetes_cluster_ca_certificate
-          token: kubeblocks_platform.interfaces.kubernetes_token
 iac:
   validated_files:
   - main.tf

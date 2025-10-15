@@ -37,17 +37,19 @@ locals {
 
   # Output interfaces (credentials and connection details)
   output_interfaces = {
-    postgres_host          = local.primary_host
-    postgres_port          = local.primary_port
-    postgres_database      = local.postgres_database
-    postgres_username      = local.postgres_username
-    postgres_password      = sensitive(local.postgres_password)
-    pgbouncer_host         = local.pgbouncer_host
-    pgbouncer_port         = local.pgbouncer_port
-    postgres_read_host     = local.read_host
-    postgres_read_port     = local.read_port
-    connection_string      = sensitive(local.connection_string)
-    read_connection_string = sensitive(local.read_connection_string)
-    secrets                = ["postgres_password", "connection_string", "read_connection_string"]
+    postgres = {
+      postgres_host          = local.primary_host
+      postgres_port          = local.primary_port
+      postgres_database      = local.postgres_database
+      postgres_username      = local.postgres_username
+      postgres_password      = sensitive(local.postgres_password)
+      pgbouncer_host         = local.pgbouncer_host
+      pgbouncer_port         = local.pgbouncer_port
+      postgres_read_host     = local.read_host
+      postgres_read_port     = local.read_port
+      connection_string      = sensitive(local.connection_string)
+      read_connection_string = sensitive(local.read_connection_string)
+      secrets                = ["postgres_password", "connection_string", "read_connection_string"]
+    }
   }
 }

@@ -2,6 +2,15 @@
 # Creates and manages PostgreSQL database clusters using KubeBlocks operator
 # REQUIRES: KubeBlocks operator must be deployed first (CRDs must exist)
 
+# Ensure KubeBlocks operator is fully deployed before creating PostgreSQL resources
+# This null_resource forces Terraform to wait for the operator's Helm release
+resource "null_resource" "wait_for_operator" {
+  triggers = {
+    operator_release_id = var.inputs.kubeblocks_operator.output_interfaces.release_id
+    operator_status     = var.inputs.kubeblocks_operator.output_interfaces.ready
+  }
+}
+
 # Local variables for cleaner code
 locals {
   cluster_name = var.instance.spec.cluster_name
@@ -57,18 +66,15 @@ resource "kubernetes_namespace" "postgresql_cluster" {
       metadata[0].annotations
     ]
   }
+
+  # Wait for KubeBlocks operator to be fully deployed
+  depends_on = [null_resource.wait_for_operator]
 }
 
 # BackupRepo - PVC-based backup repository
 # REQUIRES: KubeBlocks operator must be deployed first (CRDs must exist)
 resource "kubernetes_manifest" "backup_repo" {
   count = local.create_backup_repo ? 1 : 0
-
-  # Bypass CRD discovery during plan phase
-  object = {
-    apiVersion = "dataprotection.kubeblocks.io/v1alpha1"
-    kind       = "BackupRepo"
-  }
 
   manifest = {
     apiVersion = "dataprotection.kubeblocks.io/v1alpha1"
@@ -115,12 +121,6 @@ resource "kubernetes_manifest" "backup_repo" {
 # PostgreSQL Cluster CRD
 # REQUIRES: KubeBlocks operator must be deployed first (CRDs must exist)
 resource "kubernetes_manifest" "postgresql_cluster" {
-  # Bypass CRD discovery during plan phase
-  object = {
-    apiVersion = "apps.kubeblocks.io/v1alpha1"
-    kind       = "Cluster"
-  }
-
   manifest = {
     apiVersion = "apps.kubeblocks.io/v1alpha1"
     kind       = "Cluster"
@@ -218,8 +218,8 @@ resource "kubernetes_manifest" "postgresql_cluster" {
   }
 
   timeouts {
-    create = "30m"
-    update = "20m"
+    create = "45m" # Increased to handle slow image pulls and volume initialization
+    update = "30m"
     delete = "15m"
   }
 

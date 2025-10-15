@@ -59,16 +59,22 @@ variable "instance" {
 variable "inputs" {
   description = "Input dependencies from other modules"
   type = object({
-    kubeblocks_platform = object({
-      attributes = optional(object({
-        namespace   = optional(string)
-        version     = optional(string)
-        api_version = optional(string)
+    kubeblocks_operator = object({
+      output_attributes = optional(object({
+        namespace     = optional(string)
+        version       = optional(string)
+        chart_version = optional(string)
       }))
-      interfaces = optional(object({
-        kubernetes_host                   = optional(string)
-        kubernetes_cluster_ca_certificate = optional(string)
-        kubernetes_token                  = optional(string)
+      output_interfaces = optional(object({
+        release_id    = optional(string)
+        dependency_id = optional(string)
+        ready         = optional(string)
+      }))
+    })
+    kubernetes_cluster = object({
+      output_attributes = optional(object({
+        cluster_name = optional(string)
+        region       = optional(string)
       }))
     })
   })
