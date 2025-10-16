@@ -3,6 +3,8 @@
 
 locals {
   # Decode credentials from KubeBlocks-generated secret
+  # Use simple base64decode with empty string fallback (not null)
+  # After deployment, run terraform refresh to get actual password values
   postgres_username = try(base64decode(data.kubernetes_secret.postgres_credentials.data["username"]), "postgres")
   postgres_password = try(base64decode(data.kubernetes_secret.postgres_credentials.data["password"]), "")
   postgres_database = "postgres"
@@ -30,9 +32,9 @@ locals {
     postgres_version  = var.instance.spec.postgres_version
     mode              = var.instance.spec.mode
     replicas          = local.replicas
-    primary_service   = data.kubernetes_service.postgres_primary.metadata[0].name
-    read_service      = local.read_host != null ? kubernetes_service.postgres_read[0].metadata[0].name : null
-    connection_secret = data.kubernetes_secret.postgres_credentials.metadata[0].name
+    primary_service   = try(data.kubernetes_service.postgres_primary.metadata[0].name, "${local.cluster_name}-postgresql")
+    read_service      = local.read_host != null ? try(kubernetes_service.postgres_read[0].metadata[0].name, null) : null
+    connection_secret = try(data.kubernetes_secret.postgres_credentials.metadata[0].name, "${local.cluster_name}-conn-credential")
   }
 
   # Output interfaces (credentials and connection details)

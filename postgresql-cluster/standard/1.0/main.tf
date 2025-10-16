@@ -2,15 +2,6 @@
 # Creates and manages PostgreSQL database clusters using KubeBlocks operator
 # REQUIRES: KubeBlocks operator must be deployed first (CRDs must exist)
 
-# Ensure KubeBlocks operator is fully deployed before creating PostgreSQL resources
-# This null_resource forces Terraform to wait for the operator's Helm release
-resource "null_resource" "wait_for_operator" {
-  triggers = {
-    operator_release_id = var.inputs.kubeblocks_operator.output_interfaces.output.release_id
-    operator_status     = var.inputs.kubeblocks_operator.output_interfaces.output.ready
-  }
-}
-
 # Local variables for cleaner code
 locals {
   cluster_name = var.instance.spec.cluster_name
@@ -49,6 +40,11 @@ resource "kubernetes_namespace" "postgresql_cluster" {
   metadata {
     name = local.namespace
 
+    annotations = {
+      "kubeblocks.io/operator-release-id"    = var.inputs.kubeblocks_operator.output_interfaces.output.release_id
+      "kubeblocks.io/operator-dependency-id" = var.inputs.kubeblocks_operator.output_interfaces.output.dependency_id
+    }
+
     labels = merge(
       {
         "app.kubernetes.io/name"       = "postgresql-cluster"
@@ -59,6 +55,11 @@ resource "kubernetes_namespace" "postgresql_cluster" {
     )
   }
 
+  # Wait for resources to be deleted before namespace deletion completes
+  timeouts {
+    delete = "5m"
+  }
+
   # If namespace already exists, don't fail - just import it
   lifecycle {
     ignore_changes = [
@@ -66,17 +67,24 @@ resource "kubernetes_namespace" "postgresql_cluster" {
       metadata[0].annotations
     ]
   }
-
-  # Wait for KubeBlocks operator to be fully deployed
-  depends_on = [null_resource.wait_for_operator]
 }
 
 # BackupRepo - PVC-based backup repository
-# REQUIRES: KubeBlocks operator must be deployed first (CRDs must exist)
-resource "kubernetes_manifest" "backup_repo" {
-  count = local.create_backup_repo ? 1 : 0
+# Using any-k8s-resource module to avoid plan-time CRD validation
+module "backup_repo" {
+  count  = local.create_backup_repo ? 1 : 0
+  source = "github.com/Facets-cloud/facets-utility-modules//any-k8s-resource"
 
-  manifest = {
+  name      = local.backup_repo_name
+  namespace = local.namespace
+
+  # Create implicit dependency on operator by including release_id in release name
+  release_name = "backuprepo-${local.backup_repo_name}-${substr(var.inputs.kubeblocks_operator.output_interfaces.output.release_id, 0, 8)}"
+
+  # Explicit dependency on namespace ensures this is created AFTER namespace
+  depends_on = [kubernetes_namespace.postgresql_cluster]
+
+  data = {
     apiVersion = "dataprotection.kubeblocks.io/v1alpha1"
     kind       = "BackupRepo"
 
@@ -84,6 +92,8 @@ resource "kubernetes_manifest" "backup_repo" {
       name = local.backup_repo_name
       annotations = {
         "dataprotection.kubeblocks.io/is-default-repo" = "true"
+        "kubeblocks.io/operator-release-id"            = var.inputs.kubeblocks_operator.output_interfaces.output.release_id
+        "kubeblocks.io/operator-dependency-id"         = var.inputs.kubeblocks_operator.output_interfaces.output.dependency_id
       }
       labels = {
         "app.kubernetes.io/instance"   = var.instance_name
@@ -109,25 +119,40 @@ resource "kubernetes_manifest" "backup_repo" {
     )
   }
 
-  field_manager {
-    force_conflicts = true
+  advanced_config = {
+    wait            = true
+    timeout         = 600 # 10 minutes
+    cleanup_on_fail = true
+    max_history     = 3
   }
-
-  computed_fields = ["metadata.finalizers", "metadata.labels", "metadata.annotations", "status"]
-
-  depends_on = [kubernetes_namespace.postgresql_cluster]
 }
 
-# PostgreSQL Cluster CRD
-# REQUIRES: KubeBlocks operator must be deployed first (CRDs must exist)
-resource "kubernetes_manifest" "postgresql_cluster" {
-  manifest = {
+# PostgreSQL Cluster
+# Using any-k8s-resource module to avoid plan-time CRD validation
+module "postgresql_cluster" {
+  source = "github.com/Facets-cloud/facets-utility-modules//any-k8s-resource"
+
+  name      = local.cluster_name
+  namespace = local.namespace
+
+  # Create implicit dependency on operator by including release_id in release name
+  release_name = "pgcluster-${local.cluster_name}-${substr(var.inputs.kubeblocks_operator.output_interfaces.output.release_id, 0, 8)}"
+
+  # Explicit dependency on namespace ensures this is created AFTER namespace
+  depends_on = [kubernetes_namespace.postgresql_cluster]
+
+  data = {
     apiVersion = "apps.kubeblocks.io/v1alpha1"
     kind       = "Cluster"
 
     metadata = {
       name      = local.cluster_name
       namespace = local.namespace
+
+      annotations = {
+        "kubeblocks.io/operator-release-id"    = var.inputs.kubeblocks_operator.output_interfaces.output.release_id
+        "kubeblocks.io/operator-dependency-id" = var.inputs.kubeblocks_operator.output_interfaces.output.dependency_id
+      }
 
       labels = merge(
         {
@@ -205,25 +230,12 @@ resource "kubernetes_manifest" "postgresql_cluster" {
     )
   }
 
-  field_manager {
-    force_conflicts = true
+  advanced_config = {
+    wait            = true
+    timeout         = 2700 # 45 minutes - increased to handle slow image pulls and volume initialization
+    cleanup_on_fail = true
+    max_history     = 3
   }
-
-  computed_fields = ["metadata.finalizers", "metadata.labels", "metadata.annotations", "status"]
-
-  wait {
-    fields = {
-      "status.phase" = "Running"
-    }
-  }
-
-  timeouts {
-    create = "45m" # Increased to handle slow image pulls and volume initialization
-    update = "30m"
-    delete = "15m"
-  }
-
-  depends_on = [kubernetes_namespace.postgresql_cluster]
 }
 
 # Read-Only Service (only for replication mode)
@@ -272,7 +284,7 @@ resource "kubernetes_service" "postgres_read" {
 
   depends_on = [
     kubernetes_namespace.postgresql_cluster,
-    kubernetes_manifest.postgresql_cluster
+    module.postgresql_cluster
   ]
 }
 
@@ -284,7 +296,7 @@ data "kubernetes_secret" "postgres_credentials" {
     namespace = local.namespace
   }
 
-  depends_on = [kubernetes_manifest.postgresql_cluster]
+  depends_on = [module.postgresql_cluster]
 }
 
 # Data Source: Primary Service
@@ -295,7 +307,7 @@ data "kubernetes_service" "postgres_primary" {
     namespace = local.namespace
   }
 
-  depends_on = [kubernetes_manifest.postgresql_cluster]
+  depends_on = [module.postgresql_cluster]
 }
 
 # Volume Expansion
