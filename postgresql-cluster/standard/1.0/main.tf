@@ -288,6 +288,17 @@ resource "kubernetes_service" "postgres_read" {
   ]
 }
 
+# Wait for KubeBlocks to create and populate the connection secret
+resource "time_sleep" "wait_for_credentials" {
+  depends_on = [module.postgresql_cluster]
+
+  create_duration = "60s"
+  triggers = {
+    cluster_name = local.cluster_name
+    namespace    = local.namespace
+  }
+}
+
 # Data Source: Connection Credentials Secret
 # KubeBlocks auto-creates this secret with format: {cluster-name}-conn-credential
 data "kubernetes_secret" "postgres_credentials" {
@@ -296,7 +307,7 @@ data "kubernetes_secret" "postgres_credentials" {
     namespace = local.namespace
   }
 
-  depends_on = [module.postgresql_cluster]
+  depends_on = [time_sleep.wait_for_credentials]
 }
 
 # Data Source: Primary Service
