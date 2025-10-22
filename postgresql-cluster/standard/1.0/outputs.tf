@@ -1,5 +1,5 @@
 locals {
-  # Decode credentials from base64-encoded data field
+  # Credentials from data field
   postgres_username = try(data.kubernetes_secret.postgres_credentials.data["username"], "postgres")
 
   postgres_password = try(data.kubernetes_secret.postgres_credentials.data["password"], "")
@@ -9,25 +9,26 @@ locals {
 
   postgres_database = "postgres"
 
-  # Primary endpoint (always exists)
-  primary_host = "${local.cluster_name}-postgresql.${local.namespace}.svc.cluster.local"
-  primary_port = 5432
+  # Writer/Primary endpoint (always exists)
+  writer_host = "${local.cluster_name}-postgresql.${local.namespace}.svc.cluster.local"
+  writer_port = 5432
 
   # PgBouncer connection pool endpoints
-  pgbouncer_host = local.primary_host
+  pgbouncer_host = local.writer_host
   pgbouncer_port = 6432
 
-  # Read endpoint (only for replication mode with read service)
-  read_host = local.create_read_service ? "${local.cluster_name}-postgresql-read.${local.namespace}.svc.cluster.local" : null
-  read_port = local.create_read_service ? 5432 : null
+  # Reader endpoint (only for replication mode with read service)
+  reader_host = local.create_read_service ? "${local.cluster_name}-postgresql-read.${local.namespace}.svc.cluster.local" : null
+  reader_port = local.create_read_service ? 5432 : null
 
-  # Connection strings
-  connection_string = local.password_is_valid ? (
-    "postgresql://${local.postgres_username}:${local.postgres_password}@${local.primary_host}:${local.primary_port}/${local.postgres_database}"
+  # Writer connection string
+  writer_connection_string = local.password_is_valid ? (
+    "postgresql://${local.postgres_username}:${local.postgres_password}@${local.writer_host}:${local.writer_port}/${local.postgres_database}"
   ) : null
 
-  read_connection_string = (local.read_host != null && local.password_is_valid) ? (
-    "postgresql://${local.postgres_username}:${local.postgres_password}@${local.read_host}:${local.read_port}/${local.postgres_database}"
+  # Reader connection string
+  reader_connection_string = (local.reader_host != null && local.password_is_valid) ? (
+    "postgresql://${local.postgres_username}:${local.postgres_password}@${local.reader_host}:${local.reader_port}/${local.postgres_database}"
   ) : null
 
   # Output attributes
@@ -37,27 +38,59 @@ locals {
     postgres_version  = var.instance.spec.postgres_version
     mode              = var.instance.spec.mode
     replicas          = local.replicas
+    resource_type     = "postgres"
+    resource_name     = var.instance_name
     primary_service   = try(data.kubernetes_service.postgres_primary.metadata[0].name, "${local.cluster_name}-postgresql")
-    read_service      = local.read_host != null ? try(kubernetes_service.postgres_read[0].metadata[0].name, null) : null
+    read_service      = local.reader_host != null ? try(kubernetes_service.postgres_read[0].metadata[0].name, null) : null
     connection_secret = try(data.kubernetes_secret.postgres_credentials.metadata[0].name, "${local.cluster_name}-conn-credential")
+    pod_prefix = {
+      writer = "${local.cluster_name}-postgresql"
+      reader = local.create_read_service ? "${local.cluster_name}-postgresql-read" : null
+    }
+    selectors = {
+      postgres = {
+        "app.kubernetes.io/instance"   = local.cluster_name
+        "app.kubernetes.io/managed-by" = "kubeblocks"
+        "app.kubernetes.io/name"       = "postgresql"
+      }
+    }
+    defaultDatabase = local.postgres_database
+    postgresVersion = var.instance.spec.postgres_version
   }
 
   # Output interfaces (credentials and connection details)
-  # Apply sensitive() ONLY in the output block, not here
   output_interfaces = {
-    postgres = {
-      postgres_host          = local.primary_host
-      postgres_port          = local.primary_port
-      postgres_database      = local.postgres_database
-      postgres_username      = local.postgres_username
-      postgres_password      = local.postgres_password # Remove sensitive() here
-      pgbouncer_host         = local.pgbouncer_host
-      pgbouncer_port         = local.pgbouncer_port
-      postgres_read_host     = local.read_host
-      postgres_read_port     = local.read_port
-      connection_string      = local.connection_string      # Remove sensitive() here
-      read_connection_string = local.read_connection_string # Remove sensitive() here
-      secrets                = ["postgres_password", "connection_string", "read_connection_string"]
+    # Writer interface (primary/master)
+    writer = {
+      host              = local.writer_host
+      port              = local.writer_port
+      username          = local.postgres_username
+      password          = sensitive(local.postgres_password)
+      database          = local.postgres_database
+      connection_string = local.writer_connection_string != null ? sensitive(local.writer_connection_string) : null
+      pgbouncer_host    = local.pgbouncer_host
+      pgbouncer_port    = local.pgbouncer_port
+      secrets           = ["password", "connection_string"]
+    }
+    # Reader interface (read replicas)
+    # If no read service exists, point to writer
+    reader = local.create_read_service ? {
+      host              = local.reader_host
+      port              = local.reader_port
+      username          = local.postgres_username
+      password          = sensitive(local.postgres_password)
+      database          = local.postgres_database
+      connection_string = local.reader_connection_string != null ? sensitive(local.reader_connection_string) : null
+      secrets           = ["password", "connection_string"]
+      } : {
+      # Fallback to writer if no read replicas
+      host              = local.writer_host
+      port              = local.writer_port
+      username          = local.postgres_username
+      password          = sensitive(local.postgres_password)
+      database          = local.postgres_database
+      connection_string = local.writer_connection_string != null ? sensitive(local.writer_connection_string) : null
+      secrets           = ["password", "connection_string"]
     }
   }
 }
