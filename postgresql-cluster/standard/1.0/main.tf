@@ -287,6 +287,69 @@ resource "kubernetes_service" "postgres_read" {
     module.postgresql_cluster
   ]
 }
+resource "null_resource" "configure_backup_schedule" {
+  count = local.backup_schedule_enabled ? 1 : 0
+
+  triggers = {
+    backup_method      = local.backup_method
+    schedule_cron      = local.backup_schedule_cron
+    retention_period   = local.backup_retention_period
+    backup_policy_name = "${local.cluster_name}-postgresql-backup-policy"
+    cluster_name       = local.cluster_name
+    namespace          = local.namespace
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      set -e  # Exit on any error
+      
+      # Wait up to 60s for BackupSchedule to exist
+      FOUND=false
+      for i in {1..12}; do
+        if kubectl get backupschedule ${local.cluster_name}-postgresql-backup-schedule -n ${local.namespace} &>/dev/null; then
+          echo "✓ BackupSchedule found, configuring..."
+          FOUND=true
+          break
+        fi
+        echo "Waiting for BackupSchedule to be created by KubeBlocks... ($i/12)"
+        sleep 5
+      done
+
+      if [ "$FOUND" = "false" ]; then
+        echo "ERROR: BackupSchedule not found after 60s"
+        exit 1
+      fi
+
+      # Configure the backup schedule
+      echo "Applying backup configuration..."
+      kubectl patch backupschedule ${local.cluster_name}-postgresql-backup-schedule \
+        -n ${local.namespace} \
+        --type=merge \
+        -p '{
+          "spec": {
+            "backupPolicyName": "${local.cluster_name}-postgresql-backup-policy",
+            "startingDeadlineMinutes": 10,
+            "schedules": [
+              {
+                "name": "${local.backup_method}",
+                "backupMethod": "${local.backup_method == "volume-snapshot" ? "volume-snapshot" : "pg-basebackup"}",
+                "cronExpression": "${local.backup_schedule_cron}",
+                "enabled": true,
+                "retentionPeriod": "${local.backup_retention_period}"
+              }
+            ]
+          }
+        }'
+      
+      echo "Backup schedule configured successfully ✓"
+    EOT
+  }
+
+  depends_on = [
+    module.postgresql_cluster,
+    module.backup_repo
+  ]
+}
 
 # Wait for KubeBlocks to create and populate the connection secret
 resource "time_sleep" "wait_for_credentials" {
