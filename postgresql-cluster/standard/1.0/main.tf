@@ -15,25 +15,29 @@ locals {
   create_read_service      = local.ha_enabled && lookup(lookup(var.instance.spec, "high_availability", {}), "create_read_service", true)
 
   # Backup settings - mapped to ClusterBackup API
-  backup_config      = lookup(var.instance.spec, "backup", {})
-  backup_enabled     = try(coalesce(lookup(local.backup_config, "enabled", null), false), false)
-  create_backup_repo = local.backup_enabled && try(coalesce(lookup(local.backup_config, "create_backup_repo", null), true), true)
+  backup_config = lookup(var.instance.spec, "backup", {})
+
+  # Ensure boolean types
+  backup_enabled     = try(lookup(local.backup_config, "enabled", false), false) == true
+  create_backup_repo = local.backup_enabled && try(lookup(local.backup_config, "create_backup_repo", true), true) == true
+
   backup_repo_name = local.backup_enabled ? (
     local.create_backup_repo
     ? "${local.cluster_name}-backup-repo"                          # Auto-generated name for self-managed
     : try(lookup(local.backup_config, "backup_repo_name", ""), "") # User-provided shared repo name
   ) : ""
+
   backup_repo_storage       = try(lookup(local.backup_config, "backup_repo_storage_size", "20Gi"), "20Gi")
   backup_repo_storage_class = try(lookup(local.backup_config, "backup_repo_storage_class", ""), "")
 
   # Backup schedule settings (for Cluster.spec.backup)
-  backup_schedule_enabled = local.backup_enabled && try(coalesce(lookup(local.backup_config, "enable_schedule", null), false), false)
+  backup_schedule_enabled = local.backup_enabled && try(lookup(local.backup_config, "enable_schedule", false), false) == true
   backup_cron_expression  = try(lookup(local.backup_config, "schedule_cron", "0 2 * * *"), "0 2 * * *")
   backup_retention_period = try(lookup(local.backup_config, "retention_period", "7d"), "7d")
   backup_method           = try(lookup(local.backup_config, "backup_method", "volume-snapshot"), "volume-snapshot")
 
   # PITR (Point-in-Time Recovery) settings
-  pitr_enabled = local.backup_enabled && try(coalesce(lookup(local.backup_config, "pitr_enabled", null), false), false)
+  pitr_enabled = local.backup_enabled && try(lookup(local.backup_config, "pitr_enabled", false), false) == true
 
   # Component definition
   component_def_ref   = "postgresql"
@@ -233,21 +237,15 @@ module "postgresql_cluster" {
         }
       } : {},
       # Conditional: Backup configuration (ClusterBackup API)
-      local.backup_enabled ? {
-        backup = merge(
-          {
-            # Core backup settings
-            enabled         = true
-            repoName        = local.backup_repo_name
-            retentionPeriod = local.backup_retention_period
-            method          = local.backup_method
-            pitrEnabled     = local.pitr_enabled
-          },
-          # Conditional: Add schedule only if enabled
-          local.backup_schedule_enabled ? {
-            cronExpression = local.backup_cron_expression
-          } : {}
-        )
+      local.backup_schedule_enabled ? {
+        backup = {
+          enabled         = true
+          repoName        = local.backup_repo_name
+          retentionPeriod = local.backup_retention_period
+          method          = local.backup_method
+          pitrEnabled     = local.pitr_enabled
+          cronExpression  = local.backup_cron_expression
+        }
       } : {}
     )
   }
