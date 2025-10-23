@@ -287,10 +287,18 @@ resource "kubernetes_service" "postgres_read" {
     module.postgresql_cluster
   ]
 }
+
+# Backup Schedule Configuration
+# KubeBlocks auto-creates BackupSchedule when cluster is created.
+# We configure it based on enable_schedule setting:
+# - When enabled: Configure schedule with user-defined settings
+# - When disabled: Set schedule with enabled: false (KubeBlocks requires at least 1 schedule)
 resource "null_resource" "configure_backup_schedule" {
-  count = local.backup_schedule_enabled ? 1 : 0
+  # Run whenever backup is enabled (regardless of schedule state)
+  count = local.backup_enabled ? 1 : 0
 
   triggers = {
+    schedule_enabled   = tostring(local.backup_schedule_enabled)
     backup_method      = local.backup_method
     schedule_cron      = local.backup_schedule_cron
     retention_period   = local.backup_retention_period
@@ -304,10 +312,11 @@ resource "null_resource" "configure_backup_schedule" {
       set -e  # Exit on any error
       
       # Wait up to 60s for BackupSchedule to exist
+      echo "Checking for BackupSchedule resource..."
       FOUND=false
       for i in {1..12}; do
-        if kubectl get backupschedule ${local.cluster_name}-postgresql-backup-schedule -n ${local.namespace} &>/dev/null; then
-          echo "✓ BackupSchedule found, configuring..."
+        if kubectl get backupschedule ${local.cluster_name}-postgresql-backup-schedule -n ${local.namespace} &>/dev/null 2>&1; then
+          echo "✓ BackupSchedule found"
           FOUND=true
           break
         fi
@@ -320,28 +329,52 @@ resource "null_resource" "configure_backup_schedule" {
         exit 1
       fi
 
-      # Configure the backup schedule
-      echo "Applying backup configuration..."
-      kubectl patch backupschedule ${local.cluster_name}-postgresql-backup-schedule \
-        -n ${local.namespace} \
-        --type=merge \
-        -p '{
-          "spec": {
-            "backupPolicyName": "${local.cluster_name}-postgresql-backup-policy",
-            "startingDeadlineMinutes": 10,
-            "schedules": [
-              {
-                "name": "${local.backup_method}",
-                "backupMethod": "${local.backup_method == "volume-snapshot" ? "volume-snapshot" : "pg-basebackup"}",
-                "cronExpression": "${local.backup_schedule_cron}",
-                "enabled": true,
-                "retentionPeriod": "${local.backup_retention_period}"
-              }
-            ]
-          }
-        }'
-      
-      echo "Backup schedule configured successfully ✓"
+      # Apply configuration based on schedule_enabled setting
+      if [ "${local.backup_schedule_enabled}" = "true" ]; then
+        echo "Enabling backup schedule: ${local.backup_method} at ${local.backup_schedule_cron}"
+        kubectl patch backupschedule ${local.cluster_name}-postgresql-backup-schedule \
+          -n ${local.namespace} \
+          --type=merge \
+          -p '{
+            "spec": {
+              "backupPolicyName": "${local.cluster_name}-postgresql-backup-policy",
+              "startingDeadlineMinutes": 10,
+              "schedules": [
+                {
+                  "name": "${local.backup_method}",
+                  "backupMethod": "${local.backup_method == "volume-snapshot" ? "volume-snapshot" : "pg-basebackup"}",
+                  "cronExpression": "${local.backup_schedule_cron}",
+                  "enabled": true,
+                  "retentionPeriod": "${local.backup_retention_period}"
+                }
+              ]
+            }
+          }'
+        echo "Backup schedule enabled successfully"
+        echo "   Method: ${local.backup_method}"
+        echo "   Schedule: ${local.backup_schedule_cron}"
+        echo "   Retention: ${local.backup_retention_period}"
+      else
+        echo "Disabling automated backup schedules"
+        kubectl patch backupschedule ${local.cluster_name}-postgresql-backup-schedule \
+          -n ${local.namespace} \
+          --type=merge \
+          -p '{
+            "spec": {
+              "schedules": [
+                {
+                  "name": "${local.backup_method}",
+                  "backupMethod": "volume-snapshot",
+                  "cronExpression": "0 0 * * 0",
+                  "enabled": false,
+                  "retentionPeriod": "7d"
+                }
+              ]
+            }
+          }'
+        echo "Automated backup schedules disabled"
+        echo "Manual backups can still be triggered via Backup CRD"
+      fi
     EOT
   }
 
