@@ -169,10 +169,14 @@ spec:
             - true
         backup_repo_name:
           type: string
-          title: Existing Backup Repository Name
-          description: Name of existing BackupRepo to use (only if create_backup_repo
+          title: Shared Backup Repository Name
+          description: Name of existing shared BackupRepo to use (required when create_backup_repo
             is false)
           x-ui-visible-if:
+            field: spec.backup.create_backup_repo
+            values:
+            - false
+          x-ui-required-if:
             field: spec.backup.create_backup_repo
             values:
             - false
@@ -234,6 +238,15 @@ spec:
             field: spec.backup.enable_schedule
             values:
             - true
+        pitr_enabled:
+          type: boolean
+          title: Enable Point-in-Time Recovery (PITR)
+          description: Enable continuous archiving for point-in-time recovery capabilities
+          default: false
+          x-ui-visible-if:
+            field: spec.backup.enabled
+            values:
+            - true
   required:
   - cluster_name
   - postgres_version
@@ -279,3 +292,4 @@ sample:
       schedule_cron: 0 2 * * *
       retention_period: 7d
       backup_method: volume-snapshot
+      pitr_enabled: false

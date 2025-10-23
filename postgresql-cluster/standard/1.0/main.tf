@@ -5,31 +5,37 @@
 # Local variables for cleaner code
 locals {
   cluster_name = var.instance.spec.cluster_name
-  # Generate unique namespace per cluster: <cluster-name>-ns
-  namespace = "${var.instance.spec.cluster_name}-ns"
-  replicas  = var.instance.spec.mode == "standalone" ? 1 : lookup(var.instance.spec, "replicas", 2)
+  namespace    = "${var.instance.spec.cluster_name}-ns"
+  replicas     = var.instance.spec.mode == "standalone" ? 1 : lookup(var.instance.spec, "replicas", 2)
 
-  # HA settings with defaults
+  # HA settings
   ha_enabled               = var.instance.spec.mode == "replication"
   enable_pod_anti_affinity = local.ha_enabled && lookup(lookup(var.instance.spec, "high_availability", {}), "enable_pod_anti_affinity", true)
   anti_affinity_type       = local.ha_enabled ? lookup(lookup(var.instance.spec, "high_availability", {}), "anti_affinity_type", "Preferred") : "Preferred"
   create_read_service      = local.ha_enabled && lookup(lookup(var.instance.spec, "high_availability", {}), "create_read_service", true)
 
-  # Backup settings
-  backup_config             = lookup(var.instance.spec, "backup", {})
-  backup_enabled            = try(coalesce(lookup(local.backup_config, "enabled", null), false), false)
-  create_backup_repo        = local.backup_enabled && try(coalesce(lookup(local.backup_config, "create_backup_repo", null), true), true)
-  backup_repo_name          = local.create_backup_repo ? "${local.cluster_name}-backup-repo" : try(lookup(local.backup_config, "backup_repo_name", ""), "")
+  # Backup settings - mapped to ClusterBackup API
+  backup_config      = lookup(var.instance.spec, "backup", {})
+  backup_enabled     = try(coalesce(lookup(local.backup_config, "enabled", null), false), false)
+  create_backup_repo = local.backup_enabled && try(coalesce(lookup(local.backup_config, "create_backup_repo", null), true), true)
+  backup_repo_name = local.backup_enabled ? (
+    local.create_backup_repo
+    ? "${local.cluster_name}-backup-repo"                          # Auto-generated name for self-managed
+    : try(lookup(local.backup_config, "backup_repo_name", ""), "") # User-provided shared repo name
+  ) : ""
   backup_repo_storage       = try(lookup(local.backup_config, "backup_repo_storage_size", "20Gi"), "20Gi")
   backup_repo_storage_class = try(lookup(local.backup_config, "backup_repo_storage_class", ""), "")
 
-  # Backup schedule settings (for future use)
+  # Backup schedule settings (for Cluster.spec.backup)
   backup_schedule_enabled = local.backup_enabled && try(coalesce(lookup(local.backup_config, "enable_schedule", null), false), false)
-  backup_schedule_cron    = try(lookup(local.backup_config, "schedule_cron", "0 2 * * *"), "0 2 * * *")
+  backup_cron_expression  = try(lookup(local.backup_config, "schedule_cron", "0 2 * * *"), "0 2 * * *")
   backup_retention_period = try(lookup(local.backup_config, "retention_period", "7d"), "7d")
   backup_method           = try(lookup(local.backup_config, "backup_method", "volume-snapshot"), "volume-snapshot")
 
-  # Component definition based on version
+  # PITR (Point-in-Time Recovery) settings
+  pitr_enabled = local.backup_enabled && try(coalesce(lookup(local.backup_config, "pitr_enabled", null), false), false)
+
+  # Component definition
   component_def_ref   = "postgresql"
   cluster_version_ref = "postgresql-${var.instance.spec.postgres_version}"
 }
@@ -127,19 +133,19 @@ module "backup_repo" {
   }
 }
 
-# PostgreSQL Cluster
+# PostgreSQL Cluster with Embedded Backup Configuration
 # Using any-k8s-resource module to avoid plan-time CRD validation
+# Backup is configured via spec.backup (ClusterBackup API)
 module "postgresql_cluster" {
   source = "github.com/Facets-cloud/facets-utility-modules//any-k8s-resource"
 
-  name      = local.cluster_name
-  namespace = local.namespace
-
-  # Create implicit dependency on operator by including release_id in release name
+  name         = local.cluster_name
+  namespace    = local.namespace
   release_name = "pgcluster-${local.cluster_name}-${substr(var.inputs.kubeblocks_operator.output_interfaces.output.release_id, 0, 8)}"
 
-  # Explicit dependency on namespace ensures this is created AFTER namespace
-  depends_on = [kubernetes_namespace.postgresql_cluster]
+  depends_on = [
+    kubernetes_namespace.postgresql_cluster
+  ]
 
   data = {
     apiVersion = "apps.kubeblocks.io/v1alpha1"
@@ -208,7 +214,6 @@ module "postgresql_cluster" {
               }
             ]
 
-            # Add tolerations to allow scheduling on spot instances and tainted nodes
             tolerations = [
               {
                 key      = "kubernetes.azure.com/scalesetpriority"
@@ -220,19 +225,36 @@ module "postgresql_cluster" {
           }
         ]
       },
-      # Conditional affinity for HA mode
+      # Conditional: Pod anti-affinity for HA
       local.enable_pod_anti_affinity ? {
         affinity = {
           podAntiAffinity = local.anti_affinity_type
           topologyKeys    = ["kubernetes.io/hostname"]
         }
+      } : {},
+      # Conditional: Backup configuration (ClusterBackup API)
+      local.backup_enabled ? {
+        backup = merge(
+          {
+            # Core backup settings
+            enabled         = true
+            repoName        = local.backup_repo_name
+            retentionPeriod = local.backup_retention_period
+            method          = local.backup_method
+            pitrEnabled     = local.pitr_enabled
+          },
+          # Conditional: Add schedule only if enabled
+          local.backup_schedule_enabled ? {
+            cronExpression = local.backup_cron_expression
+          } : {}
+        )
       } : {}
     )
   }
 
   advanced_config = {
     wait            = true
-    timeout         = 2700 # 45 minutes - increased to handle slow image pulls and volume initialization
+    timeout         = 2700
     cleanup_on_fail = true
     max_history     = 3
   }
@@ -288,101 +310,7 @@ resource "kubernetes_service" "postgres_read" {
   ]
 }
 
-# Backup Schedule Configuration
-# KubeBlocks auto-creates BackupSchedule when cluster is created.
-# We configure it based on enable_schedule setting:
-# - When enabled: Configure schedule with user-defined settings
-# - When disabled: Set schedule with enabled: false (KubeBlocks requires at least 1 schedule)
-resource "null_resource" "configure_backup_schedule" {
-  # Run whenever backup is enabled (regardless of schedule state)
-  count = local.backup_enabled ? 1 : 0
 
-  triggers = {
-    schedule_enabled   = tostring(local.backup_schedule_enabled)
-    backup_method      = local.backup_method
-    schedule_cron      = local.backup_schedule_cron
-    retention_period   = local.backup_retention_period
-    backup_policy_name = "${local.cluster_name}-postgresql-backup-policy"
-    cluster_name       = local.cluster_name
-    namespace          = local.namespace
-  }
-
-  provisioner "local-exec" {
-    command = <<-EOT
-      set -e  # Exit on any error
-      
-      # Wait up to 60s for BackupSchedule to exist
-      echo "Checking for BackupSchedule resource..."
-      FOUND=false
-      for i in {1..12}; do
-        if kubectl get backupschedule ${local.cluster_name}-postgresql-backup-schedule -n ${local.namespace} &>/dev/null 2>&1; then
-          echo "✓ BackupSchedule found"
-          FOUND=true
-          break
-        fi
-        echo "Waiting for BackupSchedule to be created by KubeBlocks... ($i/12)"
-        sleep 5
-      done
-
-      if [ "$FOUND" = "false" ]; then
-        echo "ERROR: BackupSchedule not found after 60s"
-        exit 1
-      fi
-
-      # Apply configuration based on schedule_enabled setting
-      if [ "${local.backup_schedule_enabled}" = "true" ]; then
-        echo "Enabling backup schedule: ${local.backup_method} at ${local.backup_schedule_cron}"
-        kubectl patch backupschedule ${local.cluster_name}-postgresql-backup-schedule \
-          -n ${local.namespace} \
-          --type=merge \
-          -p '{
-            "spec": {
-              "backupPolicyName": "${local.cluster_name}-postgresql-backup-policy",
-              "startingDeadlineMinutes": 10,
-              "schedules": [
-                {
-                  "name": "${local.backup_method}",
-                  "backupMethod": "${local.backup_method == "volume-snapshot" ? "volume-snapshot" : "pg-basebackup"}",
-                  "cronExpression": "${local.backup_schedule_cron}",
-                  "enabled": true,
-                  "retentionPeriod": "${local.backup_retention_period}"
-                }
-              ]
-            }
-          }'
-        echo "Backup schedule enabled successfully"
-        echo "   Method: ${local.backup_method}"
-        echo "   Schedule: ${local.backup_schedule_cron}"
-        echo "   Retention: ${local.backup_retention_period}"
-      else
-        echo "Disabling automated backup schedules"
-        kubectl patch backupschedule ${local.cluster_name}-postgresql-backup-schedule \
-          -n ${local.namespace} \
-          --type=merge \
-          -p '{
-            "spec": {
-              "schedules": [
-                {
-                  "name": "${local.backup_method}",
-                  "backupMethod": "volume-snapshot",
-                  "cronExpression": "0 0 * * 0",
-                  "enabled": false,
-                  "retentionPeriod": "7d"
-                }
-              ]
-            }
-          }'
-        echo "Automated backup schedules disabled"
-        echo "Manual backups can still be triggered via Backup CRD"
-      fi
-    EOT
-  }
-
-  depends_on = [
-    module.postgresql_cluster,
-    module.backup_repo
-  ]
-}
 
 # Wait for KubeBlocks to create and populate the connection secret
 resource "time_sleep" "wait_for_credentials" {
