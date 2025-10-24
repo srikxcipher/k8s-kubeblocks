@@ -1,11 +1,11 @@
 apiVersion: dataprotection.kubeblocks.io/v1alpha1
 kind: Backup
 metadata:
-  name: pg-test-backup-001
+  name: pg-test-backup-basebackup
   namespace: demo
   labels:
     app: postgresql
     cluster: pg-test
 spec:
   backupPolicyName: pg-test-postgresql-backup-policy
-  backupMethod: volume-snapshot
+  backupMethod: pg-basebackup

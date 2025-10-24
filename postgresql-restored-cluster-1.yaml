@@ -1,11 +1,19 @@
 apiVersion: apps.kubeblocks.io/v1alpha1
 kind: Cluster
 metadata:
-  name: pg-test
+  name: pg-test-restored
   namespace: demo
   labels:
     app: postgresql
     environment: test
+  annotations:
+    kubeblocks.io/restore-from-backup: |
+      {
+        "postgresql": {
+          "name": "pg-test-backup-basebackup",
+          "namespace": "demo"
+        }
+      }
 spec:
   clusterDefinitionRef: postgresql
   clusterVersionRef: postgresql-14.8.0

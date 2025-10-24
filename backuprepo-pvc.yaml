@@ -2,10 +2,14 @@ apiVersion: dataprotection.kubeblocks.io/v1alpha1
 kind: BackupRepo
 metadata:
   name: my-backup-repo
+  namespace: demo
+  annotations:
+    # Use annotation to mark as default repo
+    dataprotection.kubeblocks.io/is-default-repo: "true"
 spec:
   storageProviderRef: pvc
   volumeCapacity: 10Gi
   pvReclaimPolicy: Retain
-  default: true
   config:
     storageClassName: gp3
+    mountOptions: ""

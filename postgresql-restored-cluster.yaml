@@ -7,32 +7,44 @@ metadata:
     app: postgresql
     environment: test
   annotations:
-    kubeblocks.io/restore-from-backup: '{"postgresql": {"name": "pg-test-backup-001", "namespace": "demo", "volumeRestorePolicy": "Parallel"}}'
+    kubeblocks.io/restore-from-backup: |
+      {
+        "postgresql": {
+          "name": "pg-test-backup-001",
+          "namespace": "demo",
+          "volumeRestorePolicy": "Parallel"
+        }
+      }
 spec:
   clusterDefinitionRef: postgresql
   clusterVersionRef: postgresql-14.8.0
   terminationPolicy: Delete
+  
   affinity:
     podAntiAffinity: Preferred
     topologyKeys:
       - kubernetes.io/hostname
+  
   componentSpecs:
-    - name: postgresql
-      componentDefRef: postgresql
-      serviceVersion: "14.8.0"
-      replicas: 1
-      resources:
-        limits:
-          cpu: "1"
-          memory: "1Gi"
-        requests:
-          cpu: "500m"
-          memory: "512Mi"
-      volumeClaimTemplates:
-        - name: data
-          spec:
-            accessModes:
-              - ReadWriteOnce
-            resources:
-              requests:
-                storage: 1Gi
+  - name: postgresql
+    componentDefRef: postgresql
+    serviceVersion: "14.8.0"
+    replicas: 1
+    
+    resources:
+      limits:
+        cpu: "1"
+        memory: "1Gi"
+      requests:
+        cpu: "500m"
+        memory: "512Mi"
+    
+    volumeClaimTemplates:
+    - name: data
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+        storageClassName: gp3
