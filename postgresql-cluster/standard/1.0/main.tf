@@ -17,11 +17,25 @@ locals {
   # Backup settings - mapped to ClusterBackup API
   backup_config = lookup(var.instance.spec, "backup", {})
 
+  # Check if selected backup method requires BackupRepo
+  # volume-snapshot uses AWS EBS snapshots directly (no BackupRepo needed)
+  # basebackup, wal-g methods need BackupRepo for storing backup files
+  backup_method_needs_repo = contains(["basebackup"], local.backup_method)
+
   # Ensure boolean types
   backup_enabled     = try(lookup(local.backup_config, "enabled", false), false) == true
-  create_backup_repo = local.backup_enabled && try(lookup(local.backup_config, "create_backup_repo", true), true) == true
+  
+  ##create_backup_repo = local.backup_enabled && try(lookup(local.backup_config, "create_backup_repo", true), true) == true
 
-  backup_repo_name = local.backup_enabled ? (
+  # BackupRepo creation logic
+  # Only create if:
+  # 1. Backup is enabled
+  # 2. Backup method requires repo (not volume-snapshot)
+  # 3. User wants to create new repo (not use existing shared repo)
+  create_backup_repo = (local.backup_enabled && local.backup_method_needs_repo && try(lookup(local.backup_config, "create_backup_repo", true), true) == true)
+
+  # BackupRepo name - cluster-scoped, must be unique across cluster
+  backup_repo_name = local.backup_enabled && local.backup_method_needs_repo ? (
     local.create_backup_repo
     ? "${local.cluster_name}-backup-repo"                          # Auto-generated name for self-managed
     : try(lookup(local.backup_config, "backup_repo_name", ""), "") # User-provided shared repo name
@@ -34,6 +48,8 @@ locals {
   backup_schedule_enabled = local.backup_enabled && try(lookup(local.backup_config, "enable_schedule", false), false) == true
   backup_cron_expression  = try(lookup(local.backup_config, "schedule_cron", "0 2 * * *"), "0 2 * * *")
   backup_retention_period = try(lookup(local.backup_config, "retention_period", "7d"), "7d")
+
+  # Backup method - determines if BackupRepo is needed (For volume-snapshot, we don't need BackupRepo)
   backup_method           = try(lookup(local.backup_config, "backup_method", "volume-snapshot"), "volume-snapshot")
 
   # PITR (Point-in-Time Recovery) settings
@@ -42,6 +58,13 @@ locals {
   # Component definition
   component_def_ref   = "postgresql"
   cluster_version_ref = "postgresql-${var.instance.spec.postgres_version}"
+
+  # Namespace for cluster-scoped resource tracking
+  # Use KubeBlocks operator namespace for consistency
+  cluster_scoped_tracking_namespace = try(
+    var.inputs.kubeblocks_operator.output_attributes.namespace,
+    "kube-system"  # Fallback if operator namespace not provided
+  )
 }
 
 # Kubernetes Namespace for PostgreSQL Cluster
@@ -81,12 +104,17 @@ resource "kubernetes_namespace" "postgresql_cluster" {
 
 # BackupRepo - PVC-based backup repository
 # Using any-k8s-resource module to avoid plan-time CRD validation
+# Only created when:
+# 1. Backup is enabled
+# 2. Backup method requires repo (basebackup - NOT volume-snapshot)
+# 3. User wants to create new repo (not use existing shared repo)
+
 module "backup_repo" {
   count  = local.create_backup_repo ? 1 : 0
   source = "github.com/Facets-cloud/facets-utility-modules//any-k8s-resource"
 
   name      = local.backup_repo_name
-  namespace = local.namespace
+  namespace = local.cluster_scoped_tracking_namespace
 
   # Create implicit dependency on operator by including release_id in release name
   release_name = "backuprepo-${local.backup_repo_name}-${substr(var.inputs.kubeblocks_operator.output_interfaces.output.release_id, 0, 8)}"
@@ -101,11 +129,11 @@ module "backup_repo" {
     metadata = {
       name = local.backup_repo_name
       annotations = {
-        "dataprotection.kubeblocks.io/is-default-repo" = "true"
         "kubeblocks.io/operator-release-id"            = var.inputs.kubeblocks_operator.output_interfaces.output.release_id
         "kubeblocks.io/operator-dependency-id"         = var.inputs.kubeblocks_operator.output_interfaces.output.dependency_id
       }
       labels = {
+        "app.kubernetes.io/name"       = "postgresql-backup-repo"
         "app.kubernetes.io/instance"   = var.instance_name
         "app.kubernetes.io/managed-by" = "terraform"
       }
